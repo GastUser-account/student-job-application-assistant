@@ -1,0 +1,4 @@
+# Supabase CLI configuration.
+# The function verifies x-logger-secret itself, so the platform JWT gate must be disabled.
+[functions.logger-ingest]
+verify_jwt = false
