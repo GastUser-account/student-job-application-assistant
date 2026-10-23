@@ -1,33 +1,36 @@
 # student-job-application-assistant
 
-This is a [Next.js](https://nextjs.org) project bootstrapped with [v0](https://v0.app).
 
-## Built with v0
+# Dutch Filtration Remote Monitoring
 
-This repository is linked to a [v0](https://v0.app) project. You can continue developing by visiting the link below -- start new chats to make changes, and v0 will push commits directly to this repo. Every merge to `main` will automatically deploy.
+This Vite dashboard reads the supplied GPRS packets from Supabase when configured and falls back to the local simulation without credentials.
 
-[Continue working on v0 →](https://v0.app/chat/projects/prj_x67VOXvOjcmMrHbsW2UhRRPsSzH4)
-
-## Getting Started
-
-First, run the development server:
+## Local development
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
+pnpm install
+cp .env.example .env.local
 pnpm dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Set `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` in `.env.local`. The anon key is safe for browser use when the table policy remains read-only.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Supabase setup
 
-## Learn More
+1. Create a Supabase project.
+2. Run `supabase/schema.sql` in the Supabase SQL Editor.
+3. Run `supabase/seed.sql` in the same editor to insert all 46 supplied packets.
+4. Copy the project URL and anon key into `.env.local` for local work.
 
-To learn more, take a look at the following resources:
+The database stores each original packet in `public.gprs_packets`, including packet type, device id, device timestamp, raw payload, and alarm label. The browser parser expands STB pipe-delimited samples into chart points.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-- [v0 Documentation](https://v0.app/docs) - learn about v0 and how to use it.
+## Vercel deployment
+
+Import the repository into Vercel. The included `vercel.json` uses the Vite build command and `dist` output. Add these Production environment variables in Vercel before deploying:
+
+```text
+VITE_SUPABASE_URL=https://your-project.supabase.co
+VITE_SUPABASE_ANON_KEY=your-anon-key
+```
+
+Redeploy after adding the variables. No Supabase service-role key belongs in Vercel or the browser.
