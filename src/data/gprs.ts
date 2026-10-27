@@ -14,6 +14,8 @@ export type GprsData = {
   alarms: Alarm[]
   latest: Record<string, number>
   packetCount: number
+  devices: string[]
+  latestDeviceId: string | null
 }
 
 const numberValue = (value: string | undefined) => {
@@ -65,14 +67,20 @@ const toAlarm = (row: PacketRow): Alarm | null => {
 
 export async function fetchGprsData(): Promise<GprsData | null> {
   if (!supabase) return null
-  const { data, error } = await supabase
+  const { data, error, count } = await supabase
     .from('gprs_packets')
-    .select('packet_type, device_id, device_time, payload, alarm_label')
-    .order('device_time', { ascending: true })
+    .select('packet_type, device_id, device_time, payload, alarm_label', { count: 'exact' })
+    .order('device_time', { ascending: false })
+    .limit(1000)
   if (error) throw error
 
-  const rows = (data ?? []) as PacketRow[]
-  const telemetry = rows.flatMap(toTelemetry).slice(-28)
+  const rows = ((data ?? []) as PacketRow[]).reverse()
+  const latestDeviceId = rows.at(-1)?.device_id ?? null
+  const devices = [...new Set(rows.map(row => row.device_id))]
+  const telemetry = rows
+    .filter(row => row.device_id === latestDeviceId)
+    .flatMap(toTelemetry)
+    .slice(-28)
   const latest: Record<string, number> = telemetry.length > 0
     ? {
         inlet: telemetry.at(-1)?.inlet ?? 0,
@@ -86,20 +94,33 @@ export async function fetchGprsData(): Promise<GprsData | null> {
     telemetry,
     alarms: rows.map(toAlarm).filter((alarm): alarm is Alarm => alarm !== null).reverse(),
     latest,
-    packetCount: rows.length,
+    packetCount: count ?? rows.length,
+    devices,
+    latestDeviceId,
   }
 }
 
-export function subscribeToGprsData(onData: (data: GprsData) => void): () => void {
+export function subscribeToGprsData(
+  onData: (data: GprsData) => void,
+  onError: (error: Error) => void,
+): () => void {
   if (!supabase) return () => {}
 
   const channel = supabase
     .channel('gprs_packets_changes')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'gprs_packets' }, async () => {
-      const next = await fetchGprsData()
-      if (next) onData(next)
+      try {
+        const next = await fetchGprsData()
+        if (next) onData(next)
+      } catch (error) {
+        onError(error instanceof Error ? error : new Error(String(error)))
+      }
     })
-    .subscribe()
+    .subscribe((status, error) => {
+      if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        onError(error ?? new Error(`Supabase realtime subscription ${status.toLowerCase()}`))
+      }
+    })
 
   return () => {
     if (supabase) {

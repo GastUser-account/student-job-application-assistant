@@ -1,42 +1,23 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
-  Activity,
-  AlertTriangle,
-  BatteryMedium,
   Bell,
   CheckCircle2,
   ChevronDown,
   Clock3,
-  Gauge,
   Menu,
   MoreHorizontal,
-  Radio,
   Search,
-  Server,
-  Settings2,
-  ShieldCheck,
-  Wifi,
 } from "lucide-react";
+import { fetchGprsData, subscribeToGprsData, type GprsData } from "./data/gprs";
+import type { TelemetryPoint } from "./types";
 import {
-  advanceSimulation,
-  alarms,
-  initialTelemetry,
-  initialUnit,
-} from "./simulation";
-import { fetchGprsData, subscribeToGprsData } from "./data/gprs";
-import type { Scenario } from "./types";
-import {
-  Chevron,
-  EquipmentMap,
   EquipmentSilhouette,
   HeaderIcon,
   LiveIcon,
   Logo,
   SensorCard,
-  SimulationPanel,
   SmallLegend,
   StatusBadge,
-  StatusMetric,
   TelemetryChart,
   NavIcon,
 } from "./components/DashboardParts";
@@ -63,38 +44,21 @@ const navLabels: Record<string, string> = {
 };
 
 export default function App() {
-  const [unit, setUnit] = useState(initialUnit);
-  const [telemetry, setTelemetry] = useState(initialTelemetry);
-  const [running, setRunning] = useState(true);
-  const [speed, setSpeed] = useState(1);
-  const [scenario, setScenario] = useState<Scenario>("normal");
   const [activeNav, setActiveNav] = useState("overview");
   const [activeTab, setActiveTab] = useState("Live Data");
   const [mobileNav, setMobileNav] = useState(false);
   const [clock, setClock] = useState(new Date());
-  const [databaseAlarms, setDatabaseAlarms] = useState(alarms);
-  const [databaseStatus, setDatabaseStatus] = useState<"simulation" | "connected" | "error">("simulation");
+  const [databaseData, setDatabaseData] = useState<GprsData | null>(null);
+  const [databaseStatus, setDatabaseStatus] = useState<"connecting" | "connected" | "not-configured" | "error">("connecting");
+  const [databaseError, setDatabaseError] = useState<string | null>(null);
 
   useEffect(() => {
     const clockTimer = window.setInterval(() => setClock(new Date()), 1000);
     return () => window.clearInterval(clockTimer);
   }, []);
-  const applyDatabaseData = (data: Awaited<ReturnType<typeof fetchGprsData>>) => {
-    if (!data || data.telemetry.length === 0) return;
-
-    const latest = data.telemetry.at(-1)!;
-    setTelemetry(data.telemetry);
-    setUnit(current => ({
-      ...current,
-      sensors: {
-        ...current.sensors,
-        inlet: { ...current.sensors.inlet, value: latest.inlet, history: data.telemetry.map(point => point.inlet) },
-        outlet: { ...current.sensors.outlet, value: latest.outlet, history: data.telemetry.map(point => point.outlet) },
-        differential: { ...current.sensors.differential, value: latest.differential, history: data.telemetry.map(point => point.differential) },
-        flow: { ...current.sensors.flow, value: latest.flow, history: data.telemetry.map(point => point.flow) },
-      },
-    }));
-    setDatabaseAlarms(data.alarms);
+  const applyDatabaseData = (data: GprsData) => {
+    setDatabaseData(data);
+    setDatabaseError(null);
     setDatabaseStatus("connected");
   };
 
@@ -105,20 +69,31 @@ export default function App() {
       try {
         const data = await fetchGprsData();
         if (!active) return;
-        if (data && data.telemetry.length > 0) {
+        if (data) {
           applyDatabaseData(data);
         } else {
-          setDatabaseStatus("simulation");
+          setDatabaseStatus("not-configured");
         }
-      } catch {
-        if (active) setDatabaseStatus("error");
+      } catch (error) {
+        if (active) {
+          setDatabaseStatus("error");
+          setDatabaseError(error instanceof Error ? error.message : String(error));
+        }
       }
     };
 
     void loadData();
-    const unsubscribe = subscribeToGprsData(data => {
-      if (active) applyDatabaseData(data);
-    });
+    const unsubscribe = subscribeToGprsData(
+      data => {
+        if (active) applyDatabaseData(data);
+      },
+      error => {
+        if (active) {
+          setDatabaseStatus("error");
+          setDatabaseError(error.message);
+        }
+      },
+    );
 
     return () => {
       active = false;
@@ -126,62 +101,69 @@ export default function App() {
     };
   }, []);
 
-  useEffect(() => {
-    if (databaseStatus === "connected") {
-      setRunning(false);
-      return;
-    }
-
-    if (!running) return;
-    const timer = window.setInterval(() => {
-      const next = advanceSimulation(unit, telemetry, scenario);
-      setUnit(next.unit);
-      setTelemetry(next.history);
-    }, 3000 / speed);
-    return () => window.clearInterval(timer);
-  }, [databaseStatus, running, speed, scenario, unit, telemetry]);
-
   const formattedClock = clock.toLocaleTimeString([], {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
   });
-  const statusLabel =
-    scenario === "normal" || scenario === "high-load" ? "online" : scenario;
+  const telemetry: TelemetryPoint[] = databaseData?.telemetry ?? [];
+  const latest = telemetry.at(-1);
+  const databaseAlarms = databaseData?.alarms ?? [];
+  const assetId = databaseData?.latestDeviceId ?? "Waiting for device data";
+  const assetStatus = databaseStatus === "error" ? "alarm" : latest ? "online" : "warning";
+  const statusLabel = databaseStatus === "error" ? "error" : latest ? "receiving data" : "waiting";
   const kpis = [
     {
-      label: "TOTAL UNITS",
-      value: "5",
-      detail: "Across 5 locations",
+      label: "DEVICES",
+      value: String(databaseData?.devices.length ?? "—"),
+      detail: "Seen in Supabase packets",
       tone: "blue",
     },
     {
-      label: "ONLINE",
-      value: "5 / 100%",
-      detail: "All systems operational",
+      label: "PACKETS",
+      value: String(databaseData?.packetCount ?? "—"),
+      detail: "Stored GPRS records",
       tone: "green",
     },
-    { label: "ALARMS", value: "3", detail: "Requires attention", tone: "red" },
-    { label: "WARNING", value: "2", detail: "Monitor closely", tone: "yellow" },
     {
-      label: "AVG. DP",
-      value: "1.82",
-      unit: "bar",
-      detail: "Within normal range",
+      label: "ACTIVE ALARMS",
+      value: databaseData ? String(databaseAlarms.length) : "—",
+      detail: "Reported by backend",
+      tone: "red",
+    },
+    {
+      label: "LATEST DP",
+      value: latest ? latest.differential.toFixed(2) : "—",
+      unit: latest ? "bar" : undefined,
+      detail: "Latest device reading",
       tone: "purple",
+    },
+    {
+      label: "LATEST READING",
+      value: latest?.time ?? "—",
+      detail: databaseData?.latestDeviceId ?? "Waiting for packet data",
+      tone: "yellow",
     },
   ];
   const tabs = ["Live Data", "Status", "Details", "Events", "Maintenance"];
   const selectedMessage =
     activeTab === "Live Data"
       ? null
-      : `${activeTab} view is connected to the simulation stream.`;
-  const batteryWidth = `${Math.round(unit.battery)}%`;
-  const filterWidth = `${Math.round(unit.filterLife)}%`;
+      : `${activeTab} details are not included in the GPRS packet feed.`;
+  const connectionLabel = {
+    connecting: "Connecting to Supabase",
+    connected: "Supabase Connected",
+    "not-configured": "Supabase Not Configured",
+    error: "Supabase Connection Error",
+  }[databaseStatus];
 
   return (
     <div className="app-shell">
-      <SamplePage activeNav={activeNav} />
+      <SamplePage
+        activeNav={activeNav}
+        alarms={databaseAlarms}
+        databaseStatus={databaseStatus}
+      />
       <aside className={`sidebar ${mobileNav ? "mobile-open" : ""}`}>
         <div className="sidebar-top">
           <Logo />
@@ -202,7 +184,7 @@ export default function App() {
             >
               <NavIcon name={item} />
               <span>{navLabels[item]}</span>
-              {item === "alarms" && <em>3</em>}
+              {item === "alarms" && databaseData && databaseAlarms.length > 0 && <em>{databaseAlarms.length}</em>}
             </button>
           ))}
         </div>
@@ -222,17 +204,9 @@ export default function App() {
             </button>
           ))}
         </div>
-        <SimulationPanel
-          running={running}
-          speed={speed}
-          scenario={scenario}
-          onRunningChange={setRunning}
-          onSpeedChange={setSpeed}
-          onScenarioChange={setScenario}
-        />
         <div className="sidebar-footer">
-          <span>DF REMOTE MONITORING</span>
-          <b>v1.0.0 DEMO</b>
+          <span>SUPABASE DATA FEED</span>
+          <b>{databaseStatus === "connected" ? "CONNECTED" : databaseStatus.toUpperCase()}</b>
         </div>
       </aside>
       <main className="main-content">
@@ -254,7 +228,7 @@ export default function App() {
           </div>
           <div className="topbar-right">
             <div className="header-running">
-              <span /> {databaseStatus === "connected" ? "Supabase Connected" : "Simulation Running"}
+              <span /> {connectionLabel}
             </div>
             <div className="header-time">
               <Clock3 size={14} /> {formattedClock}
@@ -264,7 +238,7 @@ export default function App() {
             </HeaderIcon>
             <HeaderIcon label="Notifications">
               <Bell size={17} />
-              <i>3</i>
+              {databaseAlarms.length > 0 && <i>{databaseAlarms.length}</i>}
             </HeaderIcon>
             <div className="profile">
               <div className="avatar">DF</div>
@@ -280,13 +254,13 @@ export default function App() {
           <div className="page-toolbar">
             <div>
               <p className="section-kicker">
-                SYSTEM STATUS <span>•</span> UPDATED JUST NOW
+                SUPABASE DATA FEED <span>•</span> {connectionLabel.toUpperCase()}
               </p>
-              <h2>Fleet performance</h2>
+              <h2>Backend overview</h2>
             </div>
-            <button className="outline-button">
-              <Clock3 size={14} /> Last 24 hours <ChevronDown size={13} />
-            </button>
+            <span className="outline-button">
+              <Clock3 size={14} /> {latest ? `Latest packet · ${latest.time}` : "Waiting for packet data"}
+            </span>
           </div>
           <section className="kpi-grid">
             {kpis.map((kpi) => (
@@ -296,7 +270,7 @@ export default function App() {
                   <MoreHorizontal size={16} />
                 </div>
                 <div className="kpi-value">
-                  {kpi.value} <small>{kpi.unit}</small>
+                  {kpi.value} {kpi.unit && <small>{kpi.unit}</small>}
                 </div>
                 <p>{kpi.detail}</p>
                 <div className="kpi-line" />
@@ -308,39 +282,39 @@ export default function App() {
               <div className="panel-header">
                 <div>
                   <div className="panel-kicker">
-                    SELECTED ASSET <span className="asset-id">DF-RNT-1001</span>
+                    LATEST DEVICE <span className="asset-id">{assetId}</span>
                   </div>
-                  <h3>Dual Vessel Cartridge Filter Unit</h3>
+                  <h3>GPRS telemetry</h3>
                   <p className="muted">
-                    <span className="location-dot" /> Rotterdam, NL{" "}
-                    <span className="divider" /> Offshore Energy
+                    <span className="location-dot" /> {databaseData?.packetCount ?? 0} packets received{" "}
+                    <span className="divider" /> {databaseData?.devices.length ?? 0} devices
                   </p>
                 </div>
                 <div className="header-status">
-                  <LiveIcon />
-                  <StatusBadge status={unit.status} label={statusLabel} />
+                  {latest && <LiveIcon />}
+                  <StatusBadge status={assetStatus} label={statusLabel} />
                 </div>
               </div>
               <div className="equipment-layout">
                 <div className="sensor-column">
                   <SensorCard
-                    sensor={unit.sensors.inlet}
+                    sensor={{ value: latest?.inlet ?? 0, unit: "bar", history: telemetry.map(point => point.inlet) }}
                     title="Inlet Pressure"
                     sensorKey="inlet"
                   />
                   <SensorCard
-                    sensor={unit.sensors.outlet}
+                    sensor={{ value: latest?.outlet ?? 0, unit: "bar", history: telemetry.map(point => point.outlet) }}
                     title="Outlet Pressure"
                     sensorKey="outlet"
                   />
                   <SensorCard
-                    sensor={unit.sensors.differential}
+                    sensor={{ value: latest?.differential ?? 0, unit: "bar", history: telemetry.map(point => point.differential) }}
                     title="Differential Pressure"
                     sensorKey="differential"
                     accent="#f2b94b"
                   />
                 </div>
-                <EquipmentSilhouette />
+                <EquipmentSilhouette unitId={assetId} />
               </div>
               <div className="tab-row">
                 {tabs.map((tab) => (
@@ -364,7 +338,7 @@ export default function App() {
                     <div>
                       <h4>Live telemetry</h4>
                       <span>
-                        Pressure trends · Rolling 30 minute window
+                        Latest readings · Supabase GPRS packets
                       </span>
                     </div>
                     <div className="chart-legend">
@@ -381,31 +355,23 @@ export default function App() {
               <article className="panel map-panel">
                 <div className="panel-header compact">
                   <div>
-                    <div className="panel-kicker">FLEET OVERVIEW</div>
-                    <h3>Equipment locations</h3>
-                  </div>
-                  <div className="map-toggle">
-                    <button className="selected">Map</button>
-                    <button>Satellite</button>
+                    <div className="panel-kicker">SUPABASE RECORDS</div>
+                    <h3>Devices</h3>
                   </div>
                 </div>
-                <EquipmentMap />
                 <div className="location-list">
-                  <div>
-                    <span className="map-status online" />
-                    DF-RNT-1001 <small>Rotterdam, NL</small>
-                    <StatusBadge status="online" label="Online" />
-                  </div>
-                  <div>
-                    <span className="map-status online" />
-                    DF-RNT-1002 <small>North Sea</small>
-                    <StatusBadge status="online" label="Online" />
-                  </div>
-                  <div>
-                    <span className="map-status warning" />
-                    DF-RNT-1003 <small>Hamburg, DE</small>
-                    <StatusBadge status="warning" label="Warning" />
-                  </div>
+                  {databaseData?.devices.length
+                    ? databaseData.devices.map(device => (
+                      <div key={device}>
+                        <span className={`map-status ${device === databaseData.latestDeviceId ? "online" : "warning"}`} />
+                        {device}
+                        <StatusBadge
+                          status={device === databaseData.latestDeviceId ? "online" : "warning"}
+                          label={device === databaseData.latestDeviceId ? "Latest" : "Recorded"}
+                        />
+                      </div>
+                    ))
+                    : <p>{databaseStatus === "connected" ? "No device packets found." : "Device records will appear after Supabase connects."}</p>}
                 </div>
               </article>
               <article className="panel alarm-panel">
@@ -424,7 +390,7 @@ export default function App() {
                     <span>SEVERITY</span>
                   </div>
                   {databaseAlarms.map((alarm) => (
-                    <div className="alarm-row" key={alarm.time}>
+                    <div className="alarm-row" key={`${alarm.unit}-${alarm.time}-${alarm.message}`}>
                       <div>
                         <strong>{alarm.time}</strong>
                         <span>{alarm.unit}</span>
@@ -438,90 +404,22 @@ export default function App() {
                       </span>
                     </div>
                   ))}
+                  {databaseData && databaseAlarms.length === 0 && (
+                    <p className="empty-alarm-message">No alarms are reported by Supabase.</p>
+                  )}
                 </div>
               </article>
             </aside>
           </section>
-          <section className="status-grid">
-            <article className="panel status-card">
-              <div className="status-card-head">
-                <StatusMetric
-                  icon={Gauge}
-                  label="FILTER LIFE (ESTIMATED)"
-                  tone="#f2b94b"
-                >
-                  <b>{filterWidth}</b>
-                </StatusMetric>
-                <span className="status-value warning-text">23 days</span>
-              </div>
-              <div className="progress">
-                <span style={{ width: filterWidth, background: "#e3ab47" }} />
-              </div>
-              <div className="status-foot">
-                <span>Remaining</span>
-                <b>148 h operating</b>
-              </div>
-            </article>
-            <article className="panel status-card">
-              <StatusMetric
-                icon={Activity}
-                label="TOTAL OPERATING HOURS"
-                tone="#3d91ff"
-              >
-                <b>
-                  {Math.floor(unit.operatingHours)} <small>h</small>
-                </b>
-              </StatusMetric>
-              <div className="status-extra">
-                <span>Last reset</span>
-                <b>2024-05-01</b>
-              </div>
-            </article>
-            <article className="panel status-card">
-              <StatusMetric icon={Radio} label="GPS COORDINATES" tone="#36c899">
-                <b className="coordinates">51.9225° N</b>
-              </StatusMetric>
-              <div className="status-extra">
-                <span>Longitude</span>
-                <b>
-                  4.4792° E <i>±3.2m</i>
-                </b>
-              </div>
-            </article>
-            <article className="panel status-card">
-              <StatusMetric
-                icon={BatteryMedium}
-                label="BATTERY STATUS"
-                tone="#36c899"
-              >
-                <b>{batteryWidth}</b>
-              </StatusMetric>
-              <div className="battery-bar">
-                <span style={{ width: batteryWidth }} />
-              </div>
-              <div className="status-foot">
-                <span>Voltage</span>
-                <b>12.6 V</b>
-              </div>
-            </article>
-            <article className="panel status-card">
-              <StatusMetric icon={Wifi} label="CONNECTIVITY" tone="#36c899">
-                <b>4G - Excellent</b>
-              </StatusMetric>
-              <div className="status-extra">
-                <span>Signal strength</span>
-                <b>
-                  -65 dBm <i className="good">●</i>
-                </b>
-              </div>
-            </article>
-          </section>
           <footer>
-            <span>
-              Dutch Filtration Remote Monitoring Simulation <b>v1.0</b>
-            </span>
-            <span>
-              {databaseStatus === "connected" ? "Supabase GPRS telemetry connected." : databaseStatus === "error" ? "Supabase unavailable; showing simulation data." : "Simulation data active. Add Supabase environment variables to connect."}
+            <span>Dutch Filtration Remote Monitoring</span>
+            <span>{databaseStatus === "connected"
+              ? latest ? "Live telemetry is loaded from Supabase." : "Connected to Supabase; no telemetry packets found."
+              : databaseStatus === "not-configured"
+                ? "Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in the Vercel project settings."
+                : databaseStatus === "error"
+                  ? `Unable to load Supabase data: ${databaseError ?? "unknown error"}`
+                  : "Connecting to Supabase…"}
             </span>
           </footer>
         </div>

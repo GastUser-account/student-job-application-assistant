@@ -1,5 +1,4 @@
 export type UnitStatus = 'online' | 'warning' | 'alarm'
-export type Scenario = 'normal' | 'high-load' | 'warning' | 'alarm'
 
 export type TelemetryPoint = {
   time: string

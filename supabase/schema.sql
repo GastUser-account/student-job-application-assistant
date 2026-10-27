@@ -17,3 +17,17 @@ drop policy if exists "Public can read GPRS packets" on public.gprs_packets;
 create policy "Public can read GPRS packets"
   on public.gprs_packets for select
   using (true);
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'gprs_packets'
+  ) then
+    alter publication supabase_realtime add table public.gprs_packets;
+  end if;
+end
+$$;
